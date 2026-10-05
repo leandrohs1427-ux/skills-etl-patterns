@@ -47,9 +47,27 @@ Explique o motivo de cada escolha. Quem pergunta costuma usar a resposta para ap
 
 ## Fluxo de decisão
 
+### Passo 0: inspecionar o projeto (quando houver acesso ao workspace)
+
+Se você está rodando dentro do Databricks ou tem acesso a ele, descubra os fatos antes de perguntar ao usuário. Pergunte só o que não dá para descobrir (por exemplo, a latência que o negócio tolera).
+
+| O que descobrir | Como |
+|-----------------|------|
+| Tamanho, formato, partição ou clusterização | `DESCRIBE DETAIL catalogo.schema.tabela` (`numFiles`, `sizeInBytes`, `partitionColumns`, `clusteringColumns`) |
+| Frequência de escrita e tipo de operação | `DESCRIBE HISTORY catalogo.schema.tabela` (operações WRITE, MERGE, DELETE, e o horário de cada uma) |
+| Crescimento e taxa de mudança | `SELECT COUNT(*)` por dia de criação, e `numOutputRows` / `numTargetRowsUpdated` no histórico dos MERGEs |
+| Colunas de rastreio de mudança | `DESCRIBE TABLE` procurando `updated_at`, `created_at`, IDs sequenciais, colunas `op`/`seq`/`_change_type` |
+| Qualidade do `updated_at` | Verificar nulos e se ele realmente muda em updates: `SELECT COUNT(*) FILTER (WHERE updated_at IS NULL) ...` |
+| Change Data Feed ativo | `SHOW TBLPROPERTIES tabela` (`delta.enableChangeDataFeed`) |
+| Chave de negócio única | `SELECT chave, COUNT(*) ... GROUP BY chave HAVING COUNT(*) > 1` |
+| Padrão já em uso | Ler os notebooks, jobs e pipelines do projeto e dizer o que já existe antes de propor mudança |
+| Dado bruto retido | Existe tabela bronze ou arquivos de landing com o histórico? |
+
+Registre o que foi medido e o que foi suposto. Em "Diagnóstico", separe **"medido"** de **"suposto"**: a recomendação depende dessa diferença.
+
 ### Passo 1: diagnosticar
 
-Levante estas informações. Se o usuário não deu alguma, assuma um valor razoável e declare a suposição na resposta. Faça no máximo uma pergunta de esclarecimento, e só quando a resposta mudaria a arquitetura.
+Levante estas informações. Se o usuário não deu alguma e o Passo 0 não a revelou, assuma um valor razoável e declare a suposição na resposta. Faça no máximo uma pergunta de esclarecimento, e só quando a resposta mudaria a arquitetura.
 
 1. **Volume e crescimento:** quantas linhas hoje e quanto cresce?
 2. **Taxa de mudança:** que percentual muda por dia? Só inserts, ou também updates e deletes?
@@ -73,6 +91,20 @@ Levante estas informações. Se o usuário não deu alguma, assuma um valor razo
 | Dataset muito grande consultado e reprocessado por fatias (normalmente data) | Partition-based |
 | Latência de segundos a poucos minutos sem streaming por evento | Micro-batch |
 | Lógica pode mudar ou falhas podem ocorrer (sempre, em produção) | Backfill & Replay |
+
+### Passo 2b: o recurso gerenciado do Databricks resolve?
+
+Antes de montar o padrão à mão, verifique se um recurso gerenciado já cobre o caso. Costuma sair mais simples e mais barato de operar. Confirme nomes e limitações na documentação vigente, pois esses recursos evoluem rápido.
+
+| Se o caso é... | Considere antes de construir à mão |
+|----------------|-------------------------------------|
+| Gold derivada de silver, agregações, joins, que precisa ficar atualizada | **Materialized view**: o Databricks tenta atualizar de forma incremental sozinho, sem você manter marca d'água ou merge |
+| Ingestão contínua ou periódica de arquivos novos | **Auto Loader** ou **streaming table** (`availableNow` em Job agendado quando a latência permite) |
+| Aplicar CDC e SCD Type 1 ou 2 | Fluxo de CDC dos pipelines declarativos (`AUTO CDC`, antes `APPLY CHANGES`), que trata ordenação e deleções |
+| Trazer dados de bancos ou SaaS | **Lakeflow Connect** (conectores gerenciados) ou, para consulta sem copiar, **Lakehouse Federation** |
+| Garantir qualidade no caminho | **Expectations** nos pipelines declarativos (descartar, falhar ou só registrar) |
+
+Se o recurso gerenciado serve, recomende-o e mencione o padrão correspondente só para explicar o que ele faz por baixo. Se não serve (custo, limitação, requisito de controle), diga por quê e então siga para o Passo 3.
 
 ### Passo 3: montar a combinação por camada
 

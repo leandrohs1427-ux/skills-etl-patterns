@@ -35,8 +35,11 @@ Guarde a marca d'água em uma tabela de controle e atualize só depois do sucess
 ```sql
 -- Tabela de controle: ctrl.watermarks (tabela STRING, ultimo_valor TIMESTAMP)
 
--- 1) Extrai com janela de segurança de 2 horas para não perder registros atrasados
-CREATE OR REPLACE TEMP VIEW stg_pedidos AS
+-- 1) Extrai o lote para uma tabela materializada, com janela de segurança de 2 horas
+--    para não perder registros atrasados.
+--    Não use TEMP VIEW aqui: a view é lazy e seria reavaliada no passo 3,
+--    podendo enxergar linhas novas que o MERGE não processou.
+CREATE OR REPLACE TABLE stg.pedidos_lote AS
 SELECT *
 FROM origem.pedidos
 WHERE updated_at > (
@@ -45,12 +48,14 @@ WHERE updated_at > (
   WHERE tabela = 'pedidos'
 );
 
--- 2) Aplica no destino com MERGE (idempotente, ver seção 4)
+-- 2) Aplica no destino com MERGE (idempotente, ver seção 4), lendo de stg.pedidos_lote
 
--- 3) Só depois do sucesso, avança a marca d'água
+-- 3) Só depois do sucesso, avança a marca d'água usando o MESMO lote materializado.
+--    O WHERE evita gravar NULL quando o lote vier vazio (a marca d'água fica como está).
 UPDATE ctrl.watermarks
-SET ultimo_valor = (SELECT MAX(updated_at) FROM stg_pedidos)
-WHERE tabela = 'pedidos';
+SET ultimo_valor = (SELECT MAX(updated_at) FROM stg.pedidos_lote)
+WHERE tabela = 'pedidos'
+  AND (SELECT MAX(updated_at) FROM stg.pedidos_lote) IS NOT NULL;
 ```
 
 Lembrete: este padrão não enxerga deletes na origem.
@@ -164,16 +169,18 @@ O resultado traz as colunas `__START_AT` e `__END_AT` (a linha vigente tem `__EN
 
 Para SCD Type 2 escrito à mão com MERGE, o raciocínio é: (1) fechar a linha vigente da chave que mudou (`valid_to` = data da mudança, `is_current` = false); (2) inserir a nova versão com `valid_from` = data da mudança e `is_current` = true. É mais frágil com eventos fora de ordem; prefira o fluxo gerenciado quando possível.
 
-Join de fato com dimensão SCD2 (versão válida na data do fato):
+Join de fato com dimensão SCD2 (versão válida na data do fato). O exemplo usa as colunas geradas pelo fluxo declarativo (`__START_AT`, `__END_AT`); se você montou o SCD2 à mão com `valid_from` e `valid_to`, troque os nomes:
 
 ```sql
 SELECT f.*, d.city
 FROM gold.fato_pedidos f
-JOIN silver.dim_clientes d
+JOIN silver.silver_clientes_scd2 d
   ON f.customer_id = d.customer_id
- AND f.data_pedido >= d.valid_from
- AND (f.data_pedido < d.valid_to OR d.valid_to IS NULL);
+ AND f.data_pedido >= d.`__START_AT`
+ AND (f.data_pedido < d.`__END_AT` OR d.`__END_AT` IS NULL);
 ```
+
+Atenção ao tipo: `__START_AT` tem o mesmo tipo da coluna usada em `sequence_by`. Se for um número de sequência em vez de data, o join por data do fato não funciona direto; nesse caso use uma coluna de data como `sequence_by` ou mantenha uma coluna de data de efetivação.
 
 ---
 
