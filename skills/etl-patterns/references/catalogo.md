@@ -76,6 +76,8 @@ Exemplo: um pipeline diário baixa o catálogo completo de 50 mil produtos e sub
 
 **Tecnologias comuns:** Debezium, Kafka, AWS DMS, Google Datastream, leitura direta do log do banco.
 
+**No Databricks:** o `AUTO CDC` (pipelines Lakeflow) aplica o feed de mudanças e já resolve ordem, deletes e SCD Tipo 1 ou 2. Ele substitui o antigo `APPLY CHANGES`. O Change Data Feed do Delta é outra coisa: registra mudanças dentro de tabelas Delta (modo automático no Runtime 19 ou superior, ou modo legado por propriedade da tabela).
+
 **Quando usar:**
 - Aplicações que precisam de sincronização quase em tempo real sem consultar repetidamente grandes bancos operacionais.
 - É necessário capturar deletes.
@@ -107,7 +109,8 @@ Exemplo: um pipeline diário baixa o catálogo completo de 50 mil produtos e sub
 **Requisito essencial:** chaves primárias ou de negócio confiáveis.
 
 **Armadilhas:**
-- **Duplicata na origem:** deduplique por chave (mantendo o registro mais recente) antes do merge. Caso contrário o merge falha ou produz resultado errado.
+- **Duplicata na origem:** deduplique por chave (mantendo o registro mais recente) antes do merge. Caso contrário o merge pode falhar, porque é ambíguo qual linha usar.
+- **Colunas:** `UPDATE SET *` e `INSERT *` exigem que a origem tenha todas as colunas do destino. Colunas a mais na origem são ignoradas, a menos que a evolução automática de schema esteja ligada (aí são adicionadas ao destino). Na dúvida, liste as colunas explicitamente.
 - **Sem histórico:** o valor antigo é sobrescrito. Se o histórico importa, use SCD Type 2.
 - **Fora de ordem:** um registro antigo chegando depois pode sobrescrever um novo. Condicione o update a `updated_at` ou sequência maior.
 - **Deletes:** não acontecem sozinhos. Trate com soft delete ou cláusula explícita de delete.
@@ -162,7 +165,7 @@ Exemplo: um pipeline diário baixa o catálogo completo de 50 mil produtos e sub
 - **Armazenamento** cresce com tamanho do dataset × frequência dos snapshots.
 - **Só enxerga os instantes das fotos.** Mudanças entre duas fotos se perdem.
 - A **data do snapshot** deve fazer parte da chave da tabela.
-- **Time travel do Delta não substitui snapshot:** a retenção é limitada (VACUUM remove versões antigas). Para histórico de negócio, grave snapshots explícitos.
+- **Time travel do Delta não substitui snapshot:** a documentação diz para não usar o histórico da tabela como backup de longo prazo. Com as configurações padrão, os arquivos de dados são mantidos por 7 dias (o `VACUUM` remove os antigos) e o log por 30 dias. Para histórico de negócio, grave snapshots explícitos.
 - Para tabelas grandes, considere SCD Type 2 ou snapshot apenas do que mudou.
 
 **Combina com:** Full Load (cada carga completa vira um snapshot), Partition-based (particionar por data do snapshot).
@@ -187,6 +190,8 @@ Na prática, inclua também `valid_to` (ou use `null` / data muito distante para
 **Type 3 (raro):** guarda o valor anterior em uma coluna extra. Só mantém uma versão de história.
 
 **Usos comuns:** atributos de cliente, departamentos de funcionários, categorias de produtos, classificações de contas. Especialmente comum em data warehouses analíticos.
+
+**No Databricks:** o `AUTO CDC` cobre os Tipos 1 e 2 (`STORED AS SCD TYPE 1` ou `2`). No Tipo 2 ele cria as colunas `__START_AT` e `__END_AT`, preenchidas com a coluna de sequência, e a versão ativa tem `__END_AT` nulo.
 
 **Armadilhas:**
 - **Escolha quais atributos disparam nova versão.** Rastrear todos gera explosão de linhas.
@@ -216,7 +221,7 @@ Na prática, inclua também `valid_to` (ou use `null` / data muito distante para
 - **Partições desbalanceadas** deixam uma tarefa lenta carregando quase todo o dado.
 - **Dados atrasados** caem em partições antigas: reprocesse uma janela dos últimos N dias, não só a partição de hoje.
 - A chave de partição deve coincidir com o filtro mais comum de consulta e de reprocessamento.
-- No Databricks, para tabelas novas, a recomendação atual costuma ser liquid clustering, reservando particionamento tradicional para tabelas muito grandes com filtro previsível por data. Confirme na documentação vigente.
+- **No Databricks, a documentação recomenda liquid clustering** para tabelas novas (`CLUSTER BY`). Menos de 1 TB: não particione. De 1 TB a 100 TB: liquid clustering em vez de particionamento. A partir de 100 TB o particionamento pode ajudar, mas teste o liquid clustering primeiro. Cada partição deve ter pelo menos 1 GB. Os números podem mudar: confirme na documentação vigente.
 
 **Combina com:** Incremental, Append-only, Backfill (reprocessar partição por partição).
 
@@ -244,6 +249,7 @@ Na prática, inclua também `valid_to` (ou use `null` / data muito distante para
 - **Atraso em cascata:** se um lote demora mais que o intervalo, a fila cresce.
 - **Exatamente-uma-vez** depende de checkpoint e destino idempotente.
 - Defina o intervalo pela necessidade real do consumidor, não pelo mínimo tecnicamente possível.
+- **No Databricks:** sem trigger definido, o stream olha por dados a cada poucos milissegundos e pode gerar custo de API ao armazenamento. Em compute serverless só `AvailableNow` e `Once` funcionam. Streams de produção devem rodar como Lakeflow Jobs em compute de jobs. Para latência abaixo de 1 segundo, existe o modo de tempo real.
 
 **Combina com:** CDC, Upsert/Merge, SCD2.
 

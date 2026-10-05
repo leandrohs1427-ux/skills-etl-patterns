@@ -20,6 +20,8 @@ A segunda é a mais valiosa. O objetivo é raciocinar a partir das característi
 
 Explique o motivo de cada escolha. Quem pergunta costuma usar a resposta para aprender e para defender a decisão perante outras pessoas, então "faça X" sem "porque Y" vale pouco.
 
+**Databricks muda rápido.** Nomes e sintaxes de recursos mudam (por exemplo, `APPLY CHANGES` virou `AUTO CDC`, e Delta Live Tables virou Lakeflow Spark Declarative Pipelines). Ao dar código, informe a versão mínima do Databricks Runtime quando a documentação a indicar, e peça ao usuário que confirme na documentação vigente se a sintaxe for crítica. Se houver ferramenta de busca, confira a página oficial antes de afirmar.
+
 ## Os 10 padrões em uma linha
 
 | # | Padrão | Pergunta que responde |
@@ -63,7 +65,7 @@ Se você está rodando dentro do Databricks ou tem acesso a ele, descubra os fat
 | Padrão já em uso | Ler os notebooks, jobs e pipelines do projeto e dizer o que já existe antes de propor mudança |
 | Dado bruto retido | Existe tabela bronze ou arquivos de landing com o histórico? |
 
-Registre o que foi medido e o que foi suposto. Em "Diagnóstico", separe **"medido"** de **"suposto"**: a recomendação depende dessa diferença.
+Na seção "Diagnóstico" da resposta, separe **"medido"** de **"suposto"**: a recomendação depende dessa diferença.
 
 ### Passo 1: diagnosticar
 
@@ -111,8 +113,8 @@ Se o recurso gerenciado serve, recomende-o e mencione o padrão correspondente s
 Uma arquitetura de referência na lógica medalhão:
 
 - **Bronze (captura):** CDC ou ingestão incremental gravando em **append-only**, dado bruto imutável, particionado ou clusterizado por data de ingestão. É o que viabiliza replay e backfill.
-- **Silver (estado e história):** **Upsert/Merge** para o estado atual, ou **SCD Type 2** onde o histórico importa. Executado em **micro-batch** conforme a latência exigida.
-- **Gold (consumo):** tabelas agregadas, **snapshots** periódicos para relatórios por data, **partition-based** para custo e velocidade.
+- **Silver (estado e história):** **Upsert/Merge** para o estado atual, ou **SCD Type 2** onde o histórico importa. Executado em **micro-batch** conforme a latência exigida. A documentação do Databricks não recomenda gravar na Silver direto da ingestão: leia do Bronze.
+- **Gold (consumo):** tabelas agregadas, **snapshots** periódicos para relatórios por data, **partition-based** (no Databricks, liquid clustering) para custo e velocidade.
 - **Transversal:** transformações **idempotentes**, lógica versionada, job parametrizado por intervalo de datas para **backfill**.
 
 Nem toda tabela precisa de todas as camadas. Remova o que o problema não exige. Mais padrões significam mais coisas para operar.
@@ -158,3 +160,7 @@ Use esta estrutura, de forma enxuta:
 - Guardar a marca d'água (watermark) antes de a carga terminar com sucesso.
 - Pipeline sem dado bruto retido: qualquer erro de lógica vira perda definitiva.
 - Escolher o padrão pela moda (streaming, CDC) sem perguntar a latência real que o negócio precisa.
+- Gravar na Silver direto da ingestão, sem passar pelo Bronze.
+- Stream sem trigger definido (custo de API ao armazenamento) ou stream de produção em compute de uso geral.
+- Usar o time travel do Delta como snapshot de negócio (retenção padrão de 7 dias nos dados e 30 dias no log).
+- Particionar tabela com menos de 1 TB, ou por coluna de alta cardinalidade.
